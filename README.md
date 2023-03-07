@@ -14,6 +14,6 @@ See `main.py'.
 
 ## Federated Learning
 
-Will update soon..
+See `fl-main.ipynb'
 
 

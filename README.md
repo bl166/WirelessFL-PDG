@@ -17,13 +17,13 @@ For the training script, see `./main.py`.
 
 ### 1. MNIST Digit Classification
 
-For the iid experiment, please see `./FL-main-mnist.ipynb`.
+For the iid experiment, please see `./FL-main.ipynb`.
 
 For the non-iid experiment, please see `./FL-main-mnist-noniid.ipynb`.
 
 ### 2. UCI Air Quality Regression
 
-Please see `./FL-main-text.ipynb`.
+Please see `./FL-main.ipynb`.
 
 ### 3. IMDB Sentiment Classification
 

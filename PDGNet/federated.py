@@ -31,7 +31,7 @@ def init_learning_models(nuser, isize, hsize, osize, lrate=1e-3,
     return lnets, gnet
 
 
-def train_local_models(qvals, usvec, dnums, bsize, data, lnets, gnet, epochs=1, first_iter=False):
+def train_local_models(qvals, usvec, dnums, bsize, data, lnets, gnet, epochs=1, it_per_ep=None, first_iter=False):
     for user in range(len(usvec)):
         if qvals[user] >= 1: # this user is not chosen
             continue
@@ -52,7 +52,7 @@ def train_local_models(qvals, usvec, dnums, bsize, data, lnets, gnet, epochs=1, 
             lnets[user].model.load_state_dict(gnet.model.state_dict()) 
 
             # train local FL model of each user and record weights
-            lnets[user] = utils.train(lnets[user], train_loader, epochs=epochs);  
+            lnets[user] = utils.train(lnets[user], train_loader, epochs=epochs, itmax=it_per_ep);  
 
     return lnets, usvec
 
@@ -79,8 +79,6 @@ def aggregate_global_model(usvec, kweights, lnets, gnet):
         #initialize these matirces used for global FL model update
         gnet.model.load_state_dict(state_dict_new) 
         aflag = True
-        
-        #print(finalb)
         
     return gnet, aflag
 
@@ -158,6 +156,7 @@ def FL_main(inputs,
             kweights      = None,
             iteration     = 50, 
             iter_epochs   = 1,
+            iter_iters    = None,
             averagenumber = 5,
             per_ready     = None,
             seed          = None
@@ -179,12 +178,12 @@ def FL_main(inputs,
         final_metric   = 'err_rate'
         n_test_samples = 1000        
     elif 'airq' in fl_task.lower():
-        learning_rate  = 8e-4#0.015
+        learning_rate  = 8e-4
         loss_function  = nn.MSELoss
-        optim_function = torch.optim.Adam#torch.optim.SGD
+        optim_function = torch.optim.Adam
         init_func      = None
         final_metric   = 'rmse'
-        n_test_samples = 100
+        n_test_samples = 1000
     else:
         raise
         
@@ -244,6 +243,7 @@ def FL_main(inputs,
                                                       lnets = nets, 
                                                       gnet  = global_net, 
                                                       epochs= iter_epochs,
+                                                      it_per_ep  = iter_iters,
                                                       first_iter = fi==0
                                                      )
             # calculate the global model

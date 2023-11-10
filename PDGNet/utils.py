@@ -5,10 +5,11 @@ import numpy as np
 from datetime import datetime
 from prettytable import PrettyTable
 
-import torch
+import torch, torchvision
 import torch.nn.functional as F
 from torch_geometric.utils import dense_to_sparse
-    
+from torch.utils.data import TensorDataset, DataLoader
+
 import builtins as __builtin__
 
 # np.random.seed(0)
@@ -51,6 +52,12 @@ def count_parameters(model, verbose=0):
     return total_params
 
 
+def torch_clip_max_tensor(x, max):
+    return torch.min(x, max)
+
+def torch_clip_min_tensor(x, min):
+    return torch.max(x, min)
+
 def scale_to_range(x, constraints):
     if constraints is None:
         return x
@@ -87,7 +94,8 @@ def decouple_input(x, n):
     de_h = x[:,cpt2:cpt3].view(-1, n , n )
     de_p = x[:,:cpt2]
         
-    if x.shape[1]!=-cpt1 and x.shape[1]!=-cpt2 :
+    if x.shape[1]!=-cpt1 and x.shape[1]!=-cpt2 and x.shape[1]!=n*2+n**2+1:
+        print(x.shape, cpt1, cpt2, cpt3, n*2+n**2+1)
         raise ValueError('check size of input!')
     return de_p, de_h, de_pmax
 
@@ -98,12 +106,12 @@ def edge_index_batch(ei, bs, nu, dev):
     return ei_batch
         
 
-## util functions for training and evaluation
+""" util functions for training and evaluation """
 
-def train(net, dataloader, epochs):
+def train(net, dataloader, epochs, itmax=None):
 #     print(f'Training {net.name} ...')
     for ep in range(epochs):
-        for data, target in dataloader:
+        for i, (data, target) in enumerate(dataloader):
             #data, target = data.to(device), target.to(device)
             net.optimizer.zero_grad()
             logits = net.model(data)
@@ -111,27 +119,34 @@ def train(net, dataloader, epochs):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.model.parameters(), 1.)
             net.optimizer.step()
+            if i+1 == itmax:
+                break
     return net
+
             
-            
-def predict(net, dataloader):
+def predict(net, dataloader, ret='pred'):
     logits = []
     for data, target in dataloader:
         logits.append(net.model(data))
-    logits = torch.cat(logits)
+    logits = torch.cat(logits).detach()
     prob = F.softmax(logits, dim=-1)
     pred = prob.argmax(dim=-1)
-    return prob, pred
-
+    if ret=='logits':
+        return logits
+    elif ret=='prob':
+        return prob
+    else:
+        return pred
+    
 
 def weighted_selected_error_eval(w, q, reduce='mean'):
     weighted_e = w*q
     selected_i = q<1
-    vals = (w*q)[q<1].sum(-1) / np.tile(w,(q.shape[0], 1))[q<1].sum(-1)
+    vals = (w*q)[selected_i].sum(-1) / np.tile(w,(q.shape[0], 1))[selected_i].sum(-1)
     if reduce.lower()=='none':
         val = vals
     elif reduce.lower() == 'mean':
-        val = vals.mean()    
+        val = np.nanmean(vals)    
     return val
 
 
@@ -219,12 +234,12 @@ def initnw(ci, cn, inp_active, inp_minmax):
     return w,b
 
      
-## Load data
+""" util functions for loading data """
 
 def load_data_unsup(dpath, **kwargs):
     # Choice of parameters is with reference to https://github.com/bmatthiesen/deep-EE-opt/blob/062093fde6b3c6edbb8aa83462165265deefce1a/src/globalOpt/run_wsee.py#L30
     extract_args = lambda a, k: a if not k in kwargs else kwargs[k]
-    PdB = extract_args(np.array(range(-40,10+1,1)), 'PdB')   
+    PdB = extract_args(np.array(range(-40,10+1,1)), 'pdb')   
     
     mu = extract_args(4.0, 'mu')
     Pc = extract_args(1.0, 'Pc')
@@ -262,3 +277,55 @@ def load_data_unsup(dpath, **kwargs):
     return X, y, cinfo
 
 
+def load_mnist(path, seed=None):
+    random_seed = 1
+    torch.backends.cudnn.enabled = False
+    torch.manual_seed(random_seed)
+    train_transform=torchvision.transforms.Compose([
+                         torchvision.transforms.ToTensor(),
+                         torchvision.transforms.Normalize((0.1307,), (0.3081,)),
+                         torchvision.transforms.Lambda(lambda x: torch.flatten(x)) ])
+    ## training data
+    train_set = torchvision.datasets.MNIST(path, train=True, download=True, transform = train_transform)
+    ## test data
+    test_set = torchvision.datasets.MNIST(path, train=False, download=True, transform = train_transform)
+    
+    if seed is not None:
+        pidx = np.random.RandomState(seed).permutation(len(train_set.data))
+        train_set.data = train_set.data[pidx]
+        train_set.targets = train_set.targets[pidx]
+    return train_set, test_set
+
+def load_mnist_subset(path, sidx):
+    train_set, _ = load_mnist(path)
+    return torch.utils.data.Subset(train_set, sidx)
+
+def get_local_didx_list(dnums):
+    # get local data sample indices
+    d_indices = []
+    for user in range(len(dnums)):
+        d_indices.append(torch.arange(sum(dnums[:user]), sum(dnums[:user+1])))
+    return d_indices
+
+def turn_into_noise(loader, indices):
+    device = loader.dataset.dataset.data.device
+    loader.dataset.dataset.data[indices] = torch.from_numpy(
+#         (np.random.rand(len(indices),28,28)*255).astype('uint8')).to(device)
+        (np.random.normal(0,1,(len(indices),28,28))*255).astype('uint8')).to(device)
+    return loader
+     
+def get_loader_fltask(path, dnums, shuffle=False):
+    # get local data samples for the fl task
+    d_indices = get_local_didx_list(dnums)
+    train_set_sel = load_mnist_subset(path, torch.cat(d_indices).long())
+    train_loader = DataLoader(train_set_sel, batch_size=len(train_set_sel), shuffle=shuffle)
+    return train_loader
+
+def get_loader_fltask_noise(path, dnums, which, shuffle=False):
+    train_loader = get_loader_fltask(path, dnums, shuffle)
+    d_indices = get_local_didx_list(dnums)
+    noi_idx = torch.cat([d_indices[which]]).long()
+    train_loader = turn_into_noise(train_loader, noi_idx)
+    return train_loader
+   
+ 

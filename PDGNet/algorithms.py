@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from scipy.optimize import fsolve
+import warnings
 
 from utils import decouple_input, scale_to_range
 
@@ -15,7 +16,7 @@ class WirelessModel(object):
         self.bw = bandwidth                # uplink bandwidth
         
     @staticmethod
-    def packet_error_rate(h, I, P, noise=10**(-14), m=0.023):
+    def packet_error_rate(h, I, P, noise=1e-14, m=0.023):
         """
         Packet error rate of each user over each RB
         inputs: 
@@ -25,13 +26,17 @@ class WirelessModel(object):
         return:
             q - packet_error_rate
         """
-        q = 1 - np.exp( -m * (I + noise) / (P*h) )
+        sinr = (P*h) / (I + noise)
+        mask = sinr != 0 
+        sinr_masked = sinr + ~mask
+        q_ = np.exp( -m / sinr_masked )
+        q = (1 - q_) * mask
         if q.ndim==3:
             q = q.mean(0)
         return q
 
     @staticmethod
-    def signal_interf_noise_ratio(h, I, P, noise=10**(-14)):
+    def signal_interf_noise_ratio(h, I, P, noise=1e-14):
         """
         SINR (Signal-to-interference-plus-noise ratio) of each user over each RB 
         inputs: 
@@ -53,9 +58,9 @@ class WirelessModel(object):
         rateu *= bandwidth;      # Uplink data rate of each user over each RB
         return rateu
 
-    def consumed_energy(self, P, data_bits, delay_up):
+    def consumed_energy(self, P, data_bits, delay_up, Pc=1e-2):
         train_e = self.hc * data_bits   # training energy
-        trans_e = np.mean(P) * delay_up  # transmission energy
+        trans_e = (np.mean(P) + Pc) * delay_up  # transmission energy
         return train_e + trans_e
     
     @staticmethod
@@ -93,18 +98,22 @@ class FNN(nn.Module):
         x = self.model(x)
         return x
     
+    
+    
 
 class patternnet(object):
     def __init__(self, input_size, hidden_size, output_size, 
-                 criterion=nn.BCEWithLogitsLoss, learning_rate=1e-3, initFunc=None, name_string=''):
+                 criterion=nn.BCEWithLogitsLoss, optimizer = torch.optim.Adam,
+                 learning_rate=1e-3, initFunc=None, seed=None, name_string=''):
         super().__init__()
         self.model = FNN(input_size, hidden_size, output_size)
         self.init = initFunc
+        self.seed = seed
         self.reset_parameters()
         
         self.name = name_string
         self.criterion = criterion()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)#, weight_decay=1e-6)
+        self.optimizer = optimizer(self.model.parameters(), lr=learning_rate)
         
     def custom_initialize(self):
         for layers in self.model.children():
@@ -120,9 +129,13 @@ class patternnet(object):
                     layer.bias.data = torch.from_numpy(b).float()
              
     def default_initialize(self):
+        scount = 0
         for layers in self.model.children():
             for layer in layers:
                 if hasattr(layer, 'reset_parameters'):
+                    if self.seed is not None:
+                        torch.manual_seed(self.seed+scount)
+                        scount += 1
                     layer.reset_parameters()
 
     def reset_parameters(self):
@@ -130,7 +143,7 @@ class patternnet(object):
             self.default_initialize()
         else:
             self.custom_initialize()
-
+           
                     
 ## Performance and utility functions
 
@@ -151,8 +164,11 @@ def sinr_i(pt, Hx, *args):
 
 def f_trans_success_rate(pt, Hx, m):
     sinr = sinr_i(pt, Hx)
-    q = 1-torch.exp(-m/sinr) # error
-    return 1-q # correctness
+    mask = sinr != 0 
+    sinr_masked = sinr + ~mask
+    q = 1-torch.exp(-m/sinr_masked) # error
+    q_t = (1 - q) * mask
+    return q_t # correctness
 
 def f_data_rate(pt, Hx, B):
     sinr = sinr_i(pt, Hx)
@@ -164,17 +180,22 @@ def f_energy(pt, Hx, B):
     e = B*torch.log(1+sinr)/pt
     return e
 
+def f_energy_efficiency(pt, Hx, B, Pc=1e-2):
+    sinr = sinr_i(pt, Hx)
+    e = B*torch.log(1+sinr)/(pt + Pc)
+    return e
+
 # aliases
 f1 = f_trans_success_rate
 f2 = f_data_rate
-f3 = f_energy
+f3 = f_energy_efficiency
 
 
 def get_utility_func(m):
     func_dict = {
         'q': f_trans_success_rate,
         'c': f_data_rate,
-        'e': f_energy
+        'e': f_energy_efficiency
     }
     return func_dict[m]
 

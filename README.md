@@ -1,4 +1,8 @@
-# Wileless-PDGNet Implementation
+# Wireless-PDGNet Implementation
+
+Update 2023.11: Please check out the extended version under than [main branch](https://github.com/bl166/WirelessFL-PDG/tree/main) (default).
+
+----
 
 This repo is related to the following paper:
 
